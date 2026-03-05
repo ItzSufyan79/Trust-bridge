@@ -1,0 +1,60 @@
+@import url("https://fonts.googleapis.com/css2?family=Fraunces:wght@600;700&family=Space+Grotesk:wght@400;500;600&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Space Grotesk", sans-serif;
+  background: radial-gradient(circle at top left, #fef3c7, #ffffff 40%),
+    radial-gradient(circle at 20% 20%, rgba(125, 211, 252, 0.35), transparent 45%),
+    radial-gradient(circle at 80% 0%, rgba(255, 120, 73, 0.25), transparent 40%),
+    #f8fafc;
+  color: #0c0f12;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.glass {
+  background: rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  box-shadow: 0 24px 60px rgba(12, 15, 18, 0.08);
+}
+
+.grid-lines {
+  background-image: linear-gradient(rgba(12, 15, 18, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(12, 15, 18, 0.06) 1px, transparent 1px);
+  background-size: 36px 36px;
+}
+
+.section-title {
+  font-family: "Fraunces", serif;
+}
+
+.badge {
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+button {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+button:active {
+  transform: translateY(1px) scale(0.99);
+}
