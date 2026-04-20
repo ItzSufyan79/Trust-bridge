@@ -58,6 +58,13 @@ export default function App() {
   const [transactions, setTransactions] = useState([]);
   const [ledger, setLedger] = useState(null);
   const [disputes, setDisputes] = useState([]);
+  const [adminUsers, setAdminUsers] = useState([]);
+  const [adminTransactions, setAdminTransactions] = useState([]);
+  const [adminConfig, setAdminConfig] = useState({
+    siteTitle: "TrustBridge",
+    allowGuestView: true,
+    requireAdminInvite: true,
+  });
 
   const [inventoryForm, setInventoryForm] = useState({
     name: "",
@@ -66,12 +73,15 @@ export default function App() {
     stock: "",
     market_low: "",
     market_high: "",
+    image_url: "",
   });
 
   const [selectedItemId, setSelectedItemId] = useState("");
   const [quantity, setQuantity] = useState(1);
   const [activeTxId, setActiveTxId] = useState("");
   const [autoPoll, setAutoPoll] = useState(true);
+  const [inventoryImageFile, setInventoryImageFile] = useState(null);
+  const [inventoryDriveLink, setInventoryDriveLink] = useState("");
 
   const [resetMode, setResetMode] = useState("request");
   const [resetEmail, setResetEmail] = useState("");
@@ -85,8 +95,8 @@ export default function App() {
 
   useEffect(() => {
     loadPublicInventory();
-    const savedToken = localStorage.getItem("tb_token");
-    const savedUser = localStorage.getItem("tb_user");
+    const savedToken = sessionStorage.getItem("tb_token");
+    const savedUser = sessionStorage.getItem("tb_user");
     if (savedToken && savedUser) {
       const parsed = JSON.parse(savedUser);
       setToken(savedToken);
@@ -119,6 +129,21 @@ export default function App() {
     }
   }
 
+  async function loadAdminData(currentToken) {
+    try {
+      const users = await api("/admin/users", { token: currentToken });
+      setAdminUsers(users);
+    } catch {
+      setAdminUsers([]);
+    }
+    try {
+      const tx = await api("/admin/transactions", { token: currentToken });
+      setAdminTransactions(tx);
+    } catch {
+      setAdminTransactions([]);
+    }
+  }
+
   async function loadPrivateData(currentToken = token) {
     if (!currentToken) return;
     try {
@@ -138,6 +163,7 @@ export default function App() {
       if (me.role === "admin") {
         const data = await api("/admin/disputes", { token: currentToken });
         setDisputes(data);
+        await loadAdminData(currentToken);
       } else {
         setDisputes([]);
       }
@@ -172,8 +198,8 @@ export default function App() {
       });
       setToken(data.token);
       setUser(data.user);
-      localStorage.setItem("tb_token", data.token);
-      localStorage.setItem("tb_user", JSON.stringify(data.user));
+      sessionStorage.setItem("tb_token", data.token);
+      sessionStorage.setItem("tb_user", JSON.stringify(data.user));
       setMessage(`Welcome ${data.user.name}`);
       await loadPrivateData(data.token);
     } catch (err) {
@@ -221,17 +247,47 @@ export default function App() {
     setError("");
     setMessage("");
     try {
-      await api("/inventory", {
-        method: "POST",
-        token,
-        body: JSON.stringify({
-          ...inventoryForm,
-          price: Number(inventoryForm.price),
-          stock: Number(inventoryForm.stock),
-          market_low: inventoryForm.market_low ? Number(inventoryForm.market_low) : null,
-          market_high: inventoryForm.market_high ? Number(inventoryForm.market_high) : null,
-        }),
-      });
+      if (inventoryImageFile || inventoryDriveLink) {
+        const formData = new FormData();
+        formData.append("name", inventoryForm.name);
+        formData.append("sku", inventoryForm.sku);
+        formData.append("price", inventoryForm.price);
+        formData.append("stock", inventoryForm.stock);
+        if (inventoryForm.market_low) formData.append("market_low", inventoryForm.market_low);
+        if (inventoryForm.market_high) formData.append("market_high", inventoryForm.market_high);
+        if (inventoryImageFile) {
+          formData.append("image_file", inventoryImageFile);
+        }
+        if (inventoryDriveLink) {
+          formData.append("google_drive_link", inventoryDriveLink);
+        }
+        await fetch(`${API_BASE}/inventory/upload`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+          body: formData,
+        }).then(async (res) => {
+          if (!res.ok) {
+            const json = await res.json().catch(() => null);
+            throw new Error(json?.detail || "Inventory upload failed");
+          }
+          return res.json();
+        });
+      } else {
+        await api("/inventory", {
+          method: "POST",
+          token,
+          body: JSON.stringify({
+            ...inventoryForm,
+            price: Number(inventoryForm.price),
+            stock: Number(inventoryForm.stock),
+            market_low: inventoryForm.market_low ? Number(inventoryForm.market_low) : null,
+            market_high: inventoryForm.market_high ? Number(inventoryForm.market_high) : null,
+            image_url: inventoryForm.image_url || null,
+          }),
+        });
+      }
       setMessage("Inventory added.");
       setInventoryForm({
         name: "",
@@ -240,7 +296,10 @@ export default function App() {
         stock: "",
         market_low: "",
         market_high: "",
+        image_url: "",
       });
+      setInventoryImageFile(null);
+      setInventoryDriveLink("");
       await loadPrivateData();
       await loadPublicInventory();
     } catch (err) {
@@ -327,6 +386,31 @@ export default function App() {
     }
   }
 
+  async function downloadLedgerPdf(id) {
+    setError("");
+    setMessage("");
+    try {
+      const res = await fetch(`${API_BASE}/ledger/${id}/invoice`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => null);
+        throw new Error(errJson?.detail || "Failed to download PDF");
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `ledger_${id}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setMessage("Invoice downloaded.");
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   async function pollStatus(id) {
     try {
       const data = await api(`/transactions/${id}/poll-status`, { method: "POST", token });
@@ -387,8 +471,8 @@ export default function App() {
     setLedger(null);
     setDisputes([]);
     setMessage("Logged out.");
-    localStorage.removeItem("tb_token");
-    localStorage.removeItem("tb_user");
+    sessionStorage.removeItem("tb_token");
+    sessionStorage.removeItem("tb_user");
   }
 
   const progressStep = user
@@ -578,15 +662,26 @@ export default function App() {
                 }`}
                 onClick={() => setSelectedItemId(item.id)}
               >
-                <div className="text-xs uppercase tracking-[0.2em] text-slate">{item.seller_name}</div>
-                <div className="text-xl font-semibold mt-2">{item.name}</div>
-                <div className="text-sm text-slate">SKU: {item.sku}</div>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <Chip tone="good">₹{item.price}</Chip>
-                  <Chip>Stock {item.stock}</Chip>
-                  {item.market_low && item.market_high && (
-                    <Chip>₹{item.market_low} - ₹{item.market_high}</Chip>
-                  )}
+                <div className="flex gap-3 items-start">
+                  <div className="w-20 h-20 rounded-2xl overflow-hidden bg-slate/10 flex items-center justify-center">
+                    {item.image_url ? (
+                      <img src={item.image_url} alt={item.name} className="h-full w-full object-cover" />
+                    ) : (
+                      <span className="text-xs text-slate">No image</span>
+                    )}
+                  </div>
+                  <div className="flex-1 text-left">
+                    <div className="text-xs uppercase tracking-[0.2em] text-slate">{item.seller_name}</div>
+                    <div className="text-xl font-semibold mt-2">{item.name}</div>
+                    <div className="text-sm text-slate">SKU: {item.sku}</div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <Chip tone="good">₹{item.price}</Chip>
+                      <Chip>Stock {item.stock}</Chip>
+                      {item.market_low && item.market_high && (
+                        <Chip>₹{item.market_low} - ₹{item.market_high}</Chip>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </button>
             ))}
@@ -675,6 +770,23 @@ export default function App() {
                   value={inventoryForm.market_high}
                   onChange={(e) => setInventoryForm({ ...inventoryForm, market_high: e.target.value })}
                 />
+                <div className="md:col-span-2 grid gap-2">
+                  <label className="text-sm font-medium">Upload product image (file)</label>
+                  <input
+                    className="rounded-2xl border border-slate/30 p-2"
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => setInventoryImageFile(e.target.files[0] || null)}
+                  />
+                  <label className="text-sm font-medium">Or add Google Drive link</label>
+                  <input
+                    className="rounded-2xl border border-slate/30 p-3"
+                    placeholder="Google Drive share link"
+                    value={inventoryDriveLink}
+                    onChange={(e) => setInventoryDriveLink(e.target.value)}
+                  />
+                  <div className="text-xs text-slate">If you upload a file, it will be stored and shown locally. Use one option only.</div>
+                </div>
                 <button className="rounded-full bg-ink text-white px-5 py-2 md:col-span-2">
                   Add Inventory
                 </button>
@@ -742,12 +854,20 @@ export default function App() {
             <div className="glass rounded-3xl p-6">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <h2 className="section-title text-2xl">Shared Proof Ledger</h2>
-                <button
-                  className="rounded-full border border-ink px-4 py-2"
-                  onClick={() => pollStatus(activeTxId)}
-                >
-                  Sync Status
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    className="rounded-full border border-ink px-4 py-2"
+                    onClick={() => pollStatus(activeTxId)}
+                  >
+                    Sync Status
+                  </button>
+                  <button
+                    className="rounded-full border border-ink px-4 py-2"
+                    onClick={() => downloadLedgerPdf(activeTxId)}
+                  >
+                    Download Bill PDF
+                  </button>
+                </div>
               </div>
               <div className="mt-4 grid gap-3 md:grid-cols-2 text-sm">
                 <div className="rounded-2xl border border-slate/20 p-4">Buyer: {ledger.buyer}</div>
@@ -783,7 +903,102 @@ export default function App() {
         )}
 
         {user && user.role === "admin" && (
-          <section className="mt-12 grid gap-8">
+          <section className="mt-12 grid gap-6">
+            <div className="glass rounded-3xl p-6">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 className="section-title text-2xl">Admin Console</h2>
+                <div className="flex gap-2">
+                  <button
+                    className="rounded-full border border-ink px-3 py-1 text-sm"
+                    onClick={() => setMessage(`Config saved: ${JSON.stringify(adminConfig)}`)}
+                  >
+                    Save config
+                  </button>
+                </div>
+              </div>
+              <div className="mt-4 md:grid md:grid-cols-2 gap-4">
+                <div className="rounded-2xl border border-slate/20 p-4">
+                  <div className="font-semibold">Customer Details</div>
+                  <div className="text-xs text-slate">List of all users by role.</div>
+                  <div className="mt-2 text-sm">
+                    {adminUsers.filter((u) => u.role === "buyer").length} buyers
+                  </div>
+                  {adminUsers.filter((u) => u.role === "buyer").slice(0, 3).map((u) => (
+                    <div key={u.id} className="py-1 text-sm border-b border-slate/10">
+                      {u.name} ({u.email})
+                    </div>
+                  ))}
+                </div>
+                <div className="rounded-2xl border border-slate/20 p-4">
+                  <div className="font-semibold">Seller Details</div>
+                  <div className="text-xs text-slate">Active sellers and items in inventory.</div>
+                  <div className="mt-2 text-sm">
+                    {adminUsers.filter((u) => u.role === "seller").length} sellers
+                  </div>
+                  {adminUsers.filter((u) => u.role === "seller").slice(0, 3).map((u) => (
+                    <div key={u.id} className="py-1 text-sm border-b border-slate/10">
+                      {u.name} ({u.email})
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="glass rounded-3xl p-6">
+              <h2 className="section-title text-2xl">Configuration</h2>
+              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                <div>
+                  <label className="block text-sm font-medium mb-1">Site title</label>
+                  <input
+                    className="rounded-2xl border border-slate/30 p-2 w-full"
+                    value={adminConfig.siteTitle}
+                    onChange={(e) => setAdminConfig({ ...adminConfig, siteTitle: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">Require admin invite</label>
+                  <select
+                    className="rounded-2xl border border-slate/30 p-2 w-full"
+                    value={adminConfig.requireAdminInvite ? "yes" : "no"}
+                    onChange={(e) => setAdminConfig({ ...adminConfig, requireAdminInvite: e.target.value === "yes" })}
+                  >
+                    <option value="yes">Yes</option>
+                    <option value="no">No</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">Allow guest inventory view</label>
+                  <select
+                    className="rounded-2xl border border-slate/30 p-2 w-full"
+                    value={adminConfig.allowGuestView ? "yes" : "no"}
+                    onChange={(e) => setAdminConfig({ ...adminConfig, allowGuestView: e.target.value === "yes" })}
+                  >
+                    <option value="yes">Yes</option>
+                    <option value="no">No</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div className="glass rounded-3xl p-6">
+              <h2 className="section-title text-2xl">Admin Transactions + Ledger</h2>
+              <div className="mt-4 grid gap-3">
+                {adminTransactions.map((tx) => (
+                  <button
+                    key={tx.id}
+                    className={`text-left rounded-2xl border p-4 text-sm transition ${
+                      activeTxId === tx.id ? "border-ink shadow-glow" : "border-slate/20"
+                    }`}
+                    onClick={() => handleLedgerLookup(tx.id)}
+                  >
+                    <div className="font-semibold">{tx.item_name}</div>
+                    <div className="text-slate">Buyer: {tx.buyer_name} | Seller: {tx.seller_name}</div>
+                    <div className="mt-1">₹{tx.unit_price} × {tx.quantity} | {tx.payment_status}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <div className="glass rounded-3xl p-6">
               <h2 className="section-title text-2xl">Admin Disputes</h2>
               <div className="mt-4 grid gap-3">

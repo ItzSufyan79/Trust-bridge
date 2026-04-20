@@ -7,25 +7,28 @@ from hashlib import pbkdf2_hmac
 from typing import Optional
 from uuid import uuid4
 from pathlib import Path
-
+import os
 import requests
-from fastapi import Depends, FastAPI, HTTPException, Header, Request
+from fpdf import FPDF
+from fastapi import Depends, FastAPI, HTTPException, Header, Request, Response, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 DB_PATH = "./trustbridge.db"
-ADMIN_INVITE_CODE = os.getenv("TB_ADMIN_INVITE", "TRUST100")
-RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "")
-RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "")
+ADMIN_INVITE_CODE = os.getenv("TB_ADMIN_INVITE")
+RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
+RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
 RAZORPAY_WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET", "")
-SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "")
-SENDGRID_FROM_EMAIL = os.getenv("SENDGRID_FROM_EMAIL", "")
+SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
+SENDGRID_FROM_EMAIL = os.getenv("SENDGRID_FROM_EMAIL")
 APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:5173")
 AUDIT_CSV_PATH = os.getenv(
     "AUDIT_CSV_PATH", "/Users/sufyanbahauddin/TrustBridge/web/Credentials/Audit.csv"
 )
 
 app = FastAPI(title="TrustBridge API", version="0.2.0")
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 app.add_middleware(
     CORSMiddleware,
@@ -86,6 +89,7 @@ def init_db():
             reserved INTEGER NOT NULL DEFAULT 0,
             market_low REAL,
             market_high REAL,
+            image_url TEXT,
             created_at TEXT NOT NULL,
             FOREIGN KEY(seller_id) REFERENCES users(id)
         )
@@ -194,12 +198,14 @@ def init_db():
     ensure_column(conn, "transactions", "razorpay_order_id", "razorpay_order_id TEXT")
     ensure_column(conn, "transactions", "razorpay_payment_id", "razorpay_payment_id TEXT")
     ensure_column(conn, "transactions", "razorpay_signature", "razorpay_signature TEXT")
+    ensure_column(conn, "inventory", "image_url", "image_url TEXT")
     ensure_column(conn, "disputes", "resolution_note", "resolution_note TEXT")
     ensure_column(conn, "disputes", "resolved_at", "resolved_at TEXT")
     ensure_column(conn, "disputes", "resolved_by", "resolved_by TEXT")
     conn.commit()
     conn.close()
     Path(AUDIT_CSV_PATH).parent.mkdir(parents=True, exist_ok=True)
+    Path("uploads").mkdir(parents=True, exist_ok=True)
 
 
 @app.on_event("startup")
@@ -235,6 +241,7 @@ class InventoryCreate(BaseModel):
     stock: int = Field(..., ge=0)
     market_low: Optional[float] = None
     market_high: Optional[float] = None
+    image_url: Optional[str] = None
 
 
 class TransactionCreate(BaseModel):
@@ -570,8 +577,8 @@ def create_inventory(payload: InventoryCreate, user=Depends(get_current_user)):
     conn = db()
     conn.execute(
         """
-        INSERT INTO inventory (id, seller_id, name, sku, price, stock, reserved, market_low, market_high, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+        INSERT INTO inventory (id, seller_id, name, sku, price, stock, reserved, market_low, market_high, image_url, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
         """,
         (
             item_id,
@@ -582,6 +589,68 @@ def create_inventory(payload: InventoryCreate, user=Depends(get_current_user)):
             payload.stock,
             payload.market_low,
             payload.market_high,
+            payload.image_url,
+            datetime.utcnow().isoformat(),
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return {"id": item_id}
+
+
+@app.post("/inventory/upload")
+def upload_inventory(
+    name: str = Form(...),
+    sku: str = Form(...),
+    price: float = Form(...),
+    stock: int = Form(...),
+    market_low: Optional[float] = Form(None),
+    market_high: Optional[float] = Form(None),
+    image_file: Optional[UploadFile] = File(None),
+    google_drive_link: Optional[str] = Form(None),
+    user=Depends(get_current_user),
+):
+    if user["role"] != "seller":
+        raise HTTPException(status_code=403, detail="Only sellers can add inventory")
+
+    item_id = uuid4().hex
+    image_url = None
+    if image_file:
+        filename = f"{item_id}_{image_file.filename}"
+        path = Path("uploads") / filename
+        with open(path, "wb") as f:
+            f.write(image_file.file.read())
+        image_url = f"/uploads/{filename}"
+    elif google_drive_link:
+        if "drive.google.com" in google_drive_link:
+            # if share URL includes /file/d/ID
+            if "/file/d/" in google_drive_link:
+                file_id = google_drive_link.split("/file/d/")[1].split("/")[0]
+                image_url = f"https://drive.google.com/uc?export=view&id={file_id}"
+            elif "id=" in google_drive_link:
+                file_id = google_drive_link.split("id=")[1].split("&")[0]
+                image_url = f"https://drive.google.com/uc?export=view&id={file_id}"
+            else:
+                image_url = google_drive_link
+        else:
+            raise HTTPException(status_code=400, detail="Invalid Google Drive link")
+
+    conn = db()
+    conn.execute(
+        """
+        INSERT INTO inventory (id, seller_id, name, sku, price, stock, reserved, market_low, market_high, image_url, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+        """,
+        (
+            item_id,
+            user["id"],
+            name,
+            sku,
+            price,
+            stock,
+            market_low,
+            market_high,
+            image_url,
             datetime.utcnow().isoformat(),
         ),
     )
@@ -998,7 +1067,7 @@ def get_ledger(transaction_id: str, user=Depends(get_current_user)):
     conn.close()
     if not row:
         raise HTTPException(status_code=404, detail="Ledger not found")
-    if user["id"] not in (row["buyer_id"], row["seller_id"]):
+    if user["id"] not in (row["buyer_id"], row["seller_id"]) and user["role"] != "admin":
         raise HTTPException(status_code=403, detail="Not allowed")
     return {
         "id": row["id"],
@@ -1017,3 +1086,90 @@ def get_ledger(transaction_id: str, user=Depends(get_current_user)):
         "created_at": row["created_at"],
         "ledger_hash": f"ledger_{row['id'].lower()}",
     }
+
+
+@app.get("/ledger/{transaction_id}/invoice")
+def get_ledger_invoice(transaction_id: str, user=Depends(get_current_user)):
+    conn = db()
+    row = conn.execute(
+        """
+        SELECT transactions.*, inventory.name as item_name, inventory.market_low, inventory.market_high,
+               buyers.name as buyer_name, buyers.email as buyer_email,
+               sellers.name as seller_name, sellers.email as seller_email
+        FROM transactions
+        JOIN inventory ON transactions.inventory_id = inventory.id
+        JOIN users buyers ON transactions.buyer_id = buyers.id
+        JOIN users sellers ON transactions.seller_id = sellers.id
+        WHERE transactions.id = ?
+        """,
+        (transaction_id,),
+    ).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Ledger not found")
+    if user["id"] not in (row["buyer_id"], row["seller_id"]) and user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Not allowed")
+
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", "B", 18)
+    pdf.cell(0, 10, "TrustBridge Invoice", ln=True, align="C")
+    pdf.ln(4)
+    pdf.set_font("Arial", "", 11)
+    pdf.cell(0, 8, f"Invoice ID: {row['id']}", ln=True)
+    pdf.cell(0, 8, f"Generated: {datetime.utcnow().isoformat()}", ln=True)
+    pdf.ln(4)
+    pdf.set_font("Arial", "B", 12)
+    pdf.cell(0, 8, "Parties", ln=True)
+    pdf.set_font("Arial", "", 11)
+    pdf.cell(0, 7, f"Buyer: {row['buyer_name']} <{row['buyer_email']}>", ln=True)
+    pdf.cell(0, 7, f"Seller: {row['seller_name']} <{row['seller_email']}>", ln=True)
+    pdf.ln(4)
+    pdf.set_font("Arial", "B", 12)
+    pdf.cell(0, 8, "Order Summary", ln=True)
+    pdf.set_font("Arial", "", 11)
+    pdf.cell(0, 7, f"Item: {row['item_name']}", ln=True)
+    pdf.cell(0, 7, f"Quantity: {row['quantity']}", ln=True)
+    pdf.cell(0, 7, f"Unit Price: ₹{row['unit_price']:.2f}", ln=True)
+    total = row['quantity'] * row['unit_price']
+    pdf.cell(0, 7, f"Total: ₹{total:.2f}", ln=True)
+    pdf.cell(0, 7, f"Payment Status: {row['payment_status']}", ln=True)
+    pdf.cell(0, 7, f"Razorpay Order ID: {row['razorpay_order_id'] or '-'}", ln=True)
+    pdf.cell(0, 7, f"Razorpay Payment ID: {row['razorpay_payment_id'] or '-'}", ln=True)
+    pdf.ln(4)
+    pdf.cell(0, 7, f"Market Range: ₹{row['market_low'] or '-'} - ₹{row['market_high'] or '-'}", ln=True)
+    pdf.ln(4)
+    pdf.set_font("Arial", "I", 9)
+    pdf.cell(0, 6, "This bill is generated by TrustBridge shared ledger.", ln=True)
+
+    data = pdf.output(dest="S").encode("latin1")
+    return Response(content=data, media_type="application/pdf", headers={
+        "Content-Disposition": f"attachment; filename=ledger_{transaction_id}.pdf"
+    })
+
+
+@app.get("/admin/users")
+def admin_users(admin=Depends(require_admin)):
+    conn = db()
+    rows = conn.execute("SELECT id, email, name, role, created_at FROM users ORDER BY created_at DESC").fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+@app.get("/admin/transactions")
+def admin_transactions(admin=Depends(require_admin)):
+    conn = db()
+    rows = conn.execute(
+        """
+        SELECT transactions.id, transactions.quantity, transactions.unit_price, transactions.payment_status,
+               transactions.stock_status, transactions.created_at, inventory.name as item_name,
+               buyers.name as buyer_name, sellers.name as seller_name
+        FROM transactions
+        JOIN inventory ON transactions.inventory_id = inventory.id
+        JOIN users buyers ON transactions.buyer_id = buyers.id
+        JOIN users sellers ON transactions.seller_id = sellers.id
+        ORDER BY transactions.created_at DESC
+        """
+    ).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
