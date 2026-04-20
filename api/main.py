@@ -28,6 +28,8 @@ AUDIT_CSV_PATH = os.getenv(
 )
 
 app = FastAPI(title="TrustBridge API", version="0.2.0")
+
+os.makedirs("uploads", exist_ok=True)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 app.add_middleware(
