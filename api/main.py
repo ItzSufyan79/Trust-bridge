@@ -22,7 +22,7 @@ RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
 RAZORPAY_WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET", "")
 SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
 SENDGRID_FROM_EMAIL = os.getenv("SENDGRID_FROM_EMAIL")
-APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:5173")
+APP_BASE_URL = os.getenv("APP_BASE_URL")
 AUDIT_CSV_PATH = os.getenv(
     "AUDIT_CSV_PATH", "/Users/sufyanbahauddin/TrustBridge/web/Credentials/Audit.csv"
 )
